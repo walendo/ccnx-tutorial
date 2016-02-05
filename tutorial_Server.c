@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2014-2015, Xerox Corporation (Xerox)and Palo Alto Research Center (PARC)
+ * Copyright (c) 2015, Xerox Corporation (Xerox)and Palo Alto Research Center (PARC)
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -26,8 +26,10 @@
  */
 /**
  * @author Glenn Scott, Alan Walendowski, Palo Alto Research Center (Xerox PARC)
- * @copyright 2014-2015, Xerox Corporation (Xerox)and Palo Alto Research Center (PARC).  All rights reserved.
+ * @copyright 2015, Xerox Corporation (Xerox)and Palo Alto Research Center (PARC).  All rights reserved.
  */
+
+#include <LongBow/runtime.h>
 
 #include <strings.h>
 #include <stdio.h>
@@ -36,16 +38,23 @@
 #include "tutorial_FileIO.h"
 #include "tutorial_About.h"
 
-#include <LongBow/runtime.h>
 
 #include <ccnx/api/ccnx_Portal/ccnx_Portal.h>
 #include <ccnx/api/ccnx_Portal/ccnx_PortalRTA.h>
 
 #include <parc/algol/parc_Memory.h>
+#include <parc/algol/parc_ArrayList.h>
 
 #include <ccnx/common/ccnx_Name.h>
 #include <ccnx/common/ccnx_ContentObject.h>
+#include <ccnx/common/ccnx_NameSegmentNumber.h>
 
+typedef struct _pre_chunked_content {
+    char *fileName;
+    PARCArrayList *chunks;
+} ChunkList;
+
+static PARCArrayList *_chunksByFileName = NULL;
 
 /**
  * Create a new CCNxPortalFactory instance using a randomly generated identity saved to
@@ -89,7 +98,7 @@ _getNumberOfChunksRequired(uint64_t dataLength, uint32_t chunkSize)
  *
  * @return The number of the final chunk required to transfer the specified file.
  */
-static u_int64_t
+static uint64_t
 _getFinalChunkNumberOfFile(const char *filePath, uint32_t chunkSize)
 {
     size_t fileSize = tutorialFileIO_GetFileSize(filePath);
@@ -173,6 +182,130 @@ _createFetchResponse(const CCNxName *name, const char *directoryPath, const char
     return result; // Could be NULL if there was no payload
 }
 
+
+PARCArrayList *
+_chunkFileIntoMemory(char *fullFilePath, const CCNxName *name)
+{
+    PARCArrayList *result = NULL;
+
+    printf("Pre-chunking %s into memory...\n", fullFilePath);
+
+    // Make sure the file exists and is accessible before creating a ContentObject response.
+    if (tutorialFileIO_IsFileAvailable(fullFilePath)) {
+        uint64_t finalChunkNumber = _getFinalChunkNumberOfFile(fullFilePath, tutorialCommon_ChunkSize);
+
+        CCNxName *baseName = tutorialCommon_CreateWithBaseName(name);
+        result = parcArrayList_Create_Capacity(NULL, NULL, finalChunkNumber);
+
+        // Get a copy of the name, but without the chunk number.
+
+        //printf("Chunking [%s], %ld chunks\n", fullFilePath, finalChunkNumber);
+        for (uint64_t i = 0; i <= finalChunkNumber; i++) {
+            // Get the actual contents of the specified chunk of the file.
+            PARCBuffer *payload = tutorialFileIO_GetFileChunk(fullFilePath, tutorialCommon_ChunkSize, i);
+
+            if (payload != NULL) {
+                CCNxName *chunkName = ccnxName_Copy(baseName);
+                CCNxNameSegment *chunkSegment = ccnxNameSegmentNumber_Create(CCNxNameLabelType_CHUNK, i);
+                ccnxName_Append(chunkName, chunkSegment);
+
+                CCNxContentObject *contentObject = _createContentObject(chunkName, payload, finalChunkNumber);
+
+                parcBuffer_Release(&payload);
+                ccnxName_Release(&chunkName);
+                ccnxNameSegment_Release(&chunkSegment);
+
+                parcArrayList_Add(result, contentObject);
+            } else {
+                trapUnexpectedState("Could not get required chunk");
+            }
+        }
+        ccnxName_Release(&baseName);
+        printf("Finished chunking %s into memory. Resulted in %ld content objects.\n", fullFilePath, finalChunkNumber);
+    } else {
+        //trapUnexpectedState("Could not open file %s for chunking.", fullFilePath);
+
+        printf("## !! ## Could not access requested file [%s]. Could not pre-chunk. ## !! ##\n", fullFilePath);
+    }
+
+    return result;
+}
+
+/**
+ * Same as _createFetchResponse(), but pre-calculates ALL of the content objects and stores them in memory for quick retrieval.
+ */
+static CCNxContentObject *
+_createFetchResponseWithPreChunking(const CCNxName *name, const char *directoryPath, char *fileName, uint64_t requestedChunkNumber)
+{
+    CCNxContentObject *result = NULL;
+
+    ChunkList *movieChunks = NULL;
+
+    //printf("Asking for chunk %ld of %s\n", requestedChunkNumber, fullFilePath);
+
+    size_t numFilesChunked = parcArrayList_Size(_chunksByFileName);
+    for (int i = 0; i < numFilesChunked; i++) {
+        movieChunks = parcArrayList_Get(_chunksByFileName, i);
+        //printf("[%d] (%p) testing [%s] agains [%s]\n", i, (void *)movieChunks, movieChunks->fileName, fileName);
+        // use fileName and not fullFilePath for a strcmp optimization. This should really be the ccnx name, but...
+        if (strcmp(movieChunks->fileName, fileName) == 0) {
+            //printf("Found: [%d] %s (matched %s)\n", i, movieChunks->fileName, fileName);
+            break;
+        } else {
+            movieChunks = NULL;
+        }
+    }
+
+    if (movieChunks == NULL) {
+        // Chunk list for this file was empty. Build it. This will take a while.
+
+        // Combine the directoryPath and fileName into the full path name of the desired file
+        size_t filePathBufferSize = strlen(fileName) + strlen(directoryPath) + 2; // +2 for '/' and trailing null.
+        char *fullFilePath = parcMemory_Allocate(filePathBufferSize);
+        assertNotNull(fullFilePath, "parcMemory_Allocate(%zu) returned NULL", filePathBufferSize);
+        snprintf(fullFilePath, filePathBufferSize, "%s/%s", directoryPath, fileName);
+
+        printf("Pre-Chunking: %s ... \n", fullFilePath);
+        PARCArrayList *chunkedContent = _chunkFileIntoMemory(fullFilePath, name);
+
+        if (chunkedContent != NULL) {
+            printf("\nFinished Pre-Chunking: %s\n", fullFilePath);
+
+            movieChunks = parcMemory_Allocate(sizeof(ChunkList));
+            movieChunks->chunks = chunkedContent;
+            movieChunks->fileName = parcMemory_StringDuplicate(fileName, strlen(fileName)+1);
+
+            printf("Creating ChunkList %p for [%s], chunk array is %p\n", movieChunks, movieChunks->fileName, movieChunks->chunks);
+            parcArrayList_Add(_chunksByFileName, movieChunks);
+
+            // Debugging:
+            //size_t numFilesChunked = parcArrayList_Size(_chunksByFileName);
+            //for (int i = 0; i < numFilesChunked; i++) {
+            //    ChunkList *chunkList = parcArrayList_Get(_chunksByFileName, i);
+            //    printf("In Movie List: [%d] %s\n", i, chunkList->fileName);
+            //    if (strcmp(chunkList->fileName, fileName) == 0) {
+            //        assertTrue(chunkList->chunks == chunkedContent, "WTF!");
+            //    }
+            //}
+
+            parcMemory_Deallocate((void **) &fullFilePath);
+        }
+    }
+        
+    if (movieChunks != NULL) {
+
+        if (requestedChunkNumber < parcArrayList_Size(movieChunks->chunks)) {
+            result = parcArrayList_Get(movieChunks->chunks, requestedChunkNumber);
+            //printf("Returning result: %p, for chunk #%ld, from chunklist %p / %p\n", 
+            //       (void *)result, requestedChunkNumber, movieChunks, movieChunks->chunks);
+        } else {
+            printf("Requested out of range chunk %ld for %s. Returning NULL\n", requestedChunkNumber, movieChunks->fileName);
+        }
+    }
+
+    return result; // Could be NULL if there was no payload
+}
+
 /**
  * Given a CCNxName, a directory path, and a requested chunk number, create a directory listing and return the specified
  * chunk of the directory listing as the payload of a newly created CCNxContentObject.
@@ -232,7 +365,7 @@ _createListResponse(CCNxName *name, const char *directoryPath, uint64_t requeste
  *         or NULL if the Interest couldn't be answered.
  */
 static CCNxContentObject *
-_createInterestResponse(const CCNxInterest *interest, const CCNxName *domainPrefix, const char *directoryPath)
+_createInterestResponse(const CCNxInterest *interest, const CCNxName *domainPrefix, const char *directoryPath, bool doPreChunk)
 {
     CCNxName *interestName = ccnxInterest_GetName(interest);
 
@@ -240,10 +373,10 @@ _createInterestResponse(const CCNxInterest *interest, const CCNxName *domainPref
 
     uint64_t requestedChunkNumber = tutorialCommon_GetChunkNumberFromName(interestName);
 
-    char *interestNameString = ccnxName_ToString(interestName);
-    printf("tutorialServer: received Interest for chunk %d of %s, command = %s\n",
-           (int) requestedChunkNumber, interestNameString, command);
-    parcMemory_Deallocate((void **) &interestNameString);
+    //char *interestNameString = ccnxName_ToString(interestName);
+    //printf("tutorialServer: received Interest for chunk %d of %s, command = %s\n",
+    //       (int) requestedChunkNumber, interestNameString, command);
+    //parcMemory_Deallocate((void **) &interestNameString);
 
     CCNxContentObject *result = NULL;
     if (strncasecmp(command, tutorialCommon_CommandList, strlen(command)) == 0) {
@@ -251,8 +384,13 @@ _createInterestResponse(const CCNxInterest *interest, const CCNxName *domainPref
         result = _createListResponse(interestName, directoryPath, requestedChunkNumber);
     } else if (strncasecmp(command, tutorialCommon_CommandFetch, strlen(command)) == 0) {
         // This was a 'fetch' command. We should return the requested chunk of the file specified.
+
         char *fileName = tutorialCommon_CreateFileNameFromName(interestName);
-        result = _createFetchResponse(interestName, directoryPath, fileName, requestedChunkNumber);
+        if (doPreChunk) {
+            result = _createFetchResponseWithPreChunking(interestName, directoryPath, fileName, requestedChunkNumber);
+        } else {
+            result = _createFetchResponse(interestName, directoryPath, fileName, requestedChunkNumber);
+        }
         parcMemory_Deallocate((void **) &fileName);
     }
 
@@ -272,7 +410,7 @@ _createInterestResponse(const CCNxInterest *interest, const CCNxName *domainPref
  * @return true if at least one Interest is received and responded to, false otherwise.
  */
 static bool
-_receiveAndAnswerInterests(CCNxPortal *portal, const CCNxName *domainPrefix, const char *directoryPath)
+_receiveAndAnswerInterests(CCNxPortal *portal, const CCNxName *domainPrefix, const char *directoryPath, bool doPreChunk)
 {
     bool result = false;
     CCNxMetaMessage *inboundMessage = NULL;
@@ -280,9 +418,7 @@ _receiveAndAnswerInterests(CCNxPortal *portal, const CCNxName *domainPrefix, con
     while ((inboundMessage = ccnxPortal_Receive(portal, CCNxStackTimeout_Never)) != NULL) {
         if (ccnxMetaMessage_IsInterest(inboundMessage)) {
             CCNxInterest *interest = ccnxMetaMessage_GetInterest(inboundMessage);
-
-            CCNxContentObject *response = _createInterestResponse(interest, domainPrefix, directoryPath);
-
+            CCNxContentObject *response = _createInterestResponse(interest, domainPrefix, directoryPath, doPreChunk);
             // At this point, response has either the requested chunk of the request file/command,
             // or remains NULL.
 
@@ -295,14 +431,16 @@ _receiveAndAnswerInterests(CCNxPortal *portal, const CCNxName *domainPrefix, con
                 }
 
                 ccnxMetaMessage_Release(&responseMessage);
-                ccnxContentObject_Release(&response);
+
+                if (!doPreChunk) {
+                    ccnxContentObject_Release(&response);
+                }
 
                 result = true; // We have received, and responded to, at least one Interest.
             }
         }
         ccnxMetaMessage_Release(&inboundMessage);
     }
-
     return result;
 }
 
@@ -315,9 +453,10 @@ _receiveAndAnswerInterests(CCNxPortal *portal, const CCNxName *domainPrefix, con
  * @return true if at least one Interest is received and responded to, false otherwise.
  */
 static bool
-_serveDirectory(const char *directoryPath)
+_serveDirectory(const char *directoryPath, bool doPreChunk)
 {
     bool result = false;
+
 
     CCNxPortalFactory *factory = _setupServerPortalFactory();
 
@@ -329,7 +468,7 @@ _serveDirectory(const char *directoryPath)
 
     if (ccnxPortal_Listen(portal, domainPrefix, 365 * 86400, CCNxStackTimeout_Never)) {
         printf("tutorial_Server: now serving files from %s\n", directoryPath);
-        result = _receiveAndAnswerInterests(portal, domainPrefix, directoryPath);
+        result = _receiveAndAnswerInterests(portal, domainPrefix, directoryPath, doPreChunk);
     }
 
     ccnxPortal_Release(&portal);
@@ -352,7 +491,7 @@ _displayUsage(char *programName)
     printf(" A CCNx forwarder (e.g. Metis) must be running before running it. Once running, the peer\n");
     printf(" tutorialClient application can request a listing or a specified file.\n\n");
 
-    printf("Usage: %s [-h] [-v] <directory path>\n", programName);
+    printf("Usage: %s [-l lci:/a/b/c] [-h] [-v] <directory path>\n", programName);
     printf("  '%s ~/files' will serve the files in ~/files\n", programName);
     printf("  '%s -v' will show the tutorial demo code version\n", programName);
     printf("  '%s -h' will show this help\n\n", programName);
@@ -378,12 +517,26 @@ main(int argc, char *argv[argc])
         exit(status);
     }
 
+    _chunksByFileName = parcArrayList_Create(NULL);
+
+    bool doPreChunk = true; // Set this to false if you don't want to load files into memory
+                            // before responding to Interests
+
     if (commandArgCount == 1) {
-        status = (_serveDirectory(commandArgs[0]) ? EXIT_SUCCESS : EXIT_FAILURE);
+        status = (_serveDirectory(commandArgs[0], doPreChunk) ? EXIT_SUCCESS : EXIT_FAILURE);
     } else {
         status = EXIT_FAILURE;
         _displayUsage(argv[0]);
     }
+
+    for (int i = 0; i < parcArrayList_Size(_chunksByFileName); i++) {
+        ChunkList *chunkList = parcArrayList_Get(_chunksByFileName, i);
+        parcMemory_Deallocate((void **) &chunkList->fileName);
+        parcArrayList_Destroy(&chunkList->chunks);
+        parcMemory_Deallocate((void **) &chunkList);
+    }
+
+    parcArrayList_Destroy(&_chunksByFileName);
 
     exit(status);
 }

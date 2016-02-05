@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2014-2015, Xerox Corporation (Xerox)and Palo Alto Research Center (PARC)
+ * Copyright (c) 2015, Xerox Corporation (Xerox)and Palo Alto Research Center (PARC)
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -26,7 +26,7 @@
  */
 /**
  * @author Alan Walendowski, Palo Alto Research Center (Xerox PARC)
- * @copyright 2014-2015, Xerox Corporation (Xerox)and Palo Alto Research Center (PARC).  All rights reserved.
+ * @copyright 2015, Xerox Corporation (Xerox)and Palo Alto Research Center (PARC).  All rights reserved.
  */
 
 #ifndef tutorial_Common_h
@@ -47,7 +47,7 @@
 /**
  * The CCNx Name prefix we'll use for the tutorial.
  */
-extern const char *tutorialCommon_DomainPrefix;
+extern char tutorialCommon_DomainPrefix[];
 
 /**
  * The size of a chunk. We break CCNx Content payloads up into pieces of this size.
@@ -112,6 +112,16 @@ uint64_t tutorialCommon_GetChunkNumberFromName(const CCNxName *name);
  * @return A C string representation of the filename encoded in the supplied CCNxName instance.
  */
 char *tutorialCommon_CreateFileNameFromName(const CCNxName *name);
+
+/**
+ * Given a CCNxName instance, return a new CCNxName that is the same as the original
+ * except without the final segment copied. We use this to strip the chunk number from a 
+ * supplied CCNxName.
+ *
+ * @param [in] name A CCNxName instance from which to extract the base name.
+ * @return A new CCNxName instance that is the same as the original name, but without the final segment.
+ */
+CCNxName *tutorialCommon_CreateWithBaseName(const CCNxName *name);
 
 /**
  * Given a CCNxName instance, structured for this tutorial, return a string representation

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2014-2015, Xerox Corporation (Xerox)and Palo Alto Research Center (PARC)
+ * Copyright (c) 2015, Xerox Corporation (Xerox)and Palo Alto Research Center (PARC)
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -26,8 +26,9 @@
  */
 /**
  * @author Alan Walendowski, Palo Alto Research Center (Xerox PARC)
- * @copyright 2014-2015, Xerox Corporation (Xerox)and Palo Alto Research Center (PARC).  All rights reserved.
+ * @copyright 2015, Xerox Corporation (Xerox)and Palo Alto Research Center (PARC).  All rights reserved.
  */
+
 #include <stdio.h>
 #include <dirent.h>
 #include <unistd.h>
@@ -39,10 +40,34 @@
 #include "tutorial_FileIO.h"
 #include "tutorial_Common.h"
 
+static FILE *_lastFile = NULL;
+static bool _lastFileNameHasBeenSet = false;
+static char _lastFileName[512];  // a buffer to keep a copy of the last opened file name.
+
 PARCBuffer *
 tutorialFileIO_GetFileChunk(const char *fileName, size_t chunkSize, uint64_t chunkNum)
 {
-    FILE *file = fopen(fileName, "r");
+    FILE *file = NULL;
+   
+    if (_lastFileNameHasBeenSet) {
+        if (!strcmp(_lastFileName, fileName)) {
+            file = _lastFile;
+        } else {
+            fclose(_lastFile);
+            _lastFile = NULL;
+            _lastFileNameHasBeenSet = false;
+            file = NULL;
+        }
+    }
+
+    if (file == NULL) {
+        assertTrue(strlen(fileName) + 1 < sizeof(_lastFileName), "Specified file path is too long to copy");
+
+        file = fopen(fileName, "r");
+        strcpy(_lastFileName, fileName);
+        _lastFile = file;
+        _lastFileNameHasBeenSet = true;
+    }
 
     assertNotNull(file, "Could not open file '%s' - stopping.", fileName);
 
@@ -72,7 +97,7 @@ tutorialFileIO_GetFileChunk(const char *fileName, size_t chunkSize, uint64_t chu
     parcBuffer_SetLimit(result, totalNumberOfBytesRead);
     parcBuffer_Flip(result);
 
-    fclose(file);
+    //fclose(file);
 
     return result;
 }

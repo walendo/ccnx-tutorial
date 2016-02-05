@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2014-2015, Xerox Corporation (Xerox)and Palo Alto Research Center (PARC)
+ * Copyright (c) 2015, Xerox Corporation (Xerox)and Palo Alto Research Center (PARC)
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -26,8 +26,9 @@
  */
 /**
  * @author Glenn Scott, Alan Walendowski, Palo Alto Research Center (Xerox PARC)
- * @copyright 2014-2015, Xerox Corporation (Xerox)and Palo Alto Research Center (PARC).  All rights reserved.
+ * @copyright 2015, Xerox Corporation (Xerox)and Palo Alto Research Center (PARC).  All rights reserved.
  */
+
 #include <stdio.h>
 #include <strings.h>
 
@@ -49,6 +50,8 @@
 #include <parc/security/parc_Security.h>
 #include <parc/security/parc_IdentityFile.h>
 #include <parc/security/parc_PublicKeySignerPkcs12Store.h>
+
+#include <inttypes.h>
 
 /**
  * Create a new CCNxPortalFactory instance using a randomly generated identity saved to
@@ -116,6 +119,7 @@ _assembleDirectoryListing(PARCBuffer *payload, uint64_t chunkNumber, uint64_t fi
 static bool
 _assembleFile(const char *fileName, const PARCBuffer *payload, uint64_t chunkNumber, uint64_t finalChunkNumber)
 {
+
     if (chunkNumber == 0) {
         // If we're the first chunk (chunk #0), then make sure we're starting with an empty file.
         tutorialFileIO_DeleteFile(fileName);
@@ -124,9 +128,11 @@ _assembleFile(const char *fileName, const PARCBuffer *payload, uint64_t chunkNum
     // Note that the tutorialFileIO_AppendFileChunk() function should be replaced with something that keeps
     // an open file pointer instead of repeatedly re-opening it. This method simply opens (possibly creating)
     // the file and appends the specified payload). It is not an efficient implementation.
-    tutorialFileIO_AppendFileChunk(fileName, payload);
+    size_t bytes = tutorialFileIO_AppendFileChunk(fileName, payload);
 
-    return (chunkNumber == finalChunkNumber); // true, if we just wrote the final chunk
+    bool finished = (chunkNumber == finalChunkNumber); // true, if we just wrote the final chunk
+
+    return finished;
 }
 
 /**
@@ -176,9 +182,11 @@ _receiveFileChunk(const char *fileName, const PARCBuffer *payload, uint64_t chun
     if (isComplete) {
         printf("File '%s' has been fully transferred in %ld chunks.\n", fileName, (unsigned long) finalChunkNumber + 1L);
     } else {
-        printf("File '%s' has been %04.2f%% transferred.\r", fileName,
-               ((float) chunkNumber / (float) finalChunkNumber) * 100.0f);
-        fflush(stdout);
+        if (chunkNumber % 1000 == 1) {
+            printf("File '%s' has been %04.2f%% transferred.\r", fileName,
+                   ((float) chunkNumber / (float) finalChunkNumber) * 100.0f);
+            fflush(stdout);
+        }
     }
 
     return isComplete;
@@ -198,6 +206,8 @@ _receiveFileChunk(const char *fileName, const PARCBuffer *payload, uint64_t chun
 static uint64_t
 _receiveContentObject(CCNxContentObject *contentObject, const CCNxName *domainPrefix)
 {
+
+
     CCNxName *contentName = ccnxContentObject_GetName(contentObject);
 
     uint64_t chunkNumber = tutorialCommon_GetChunkNumberFromName(contentName);
@@ -225,7 +235,8 @@ _receiveContentObject(CCNxContentObject *contentObject, const CCNxName *domainPr
 
     parcMemory_Deallocate((void **) &command);
 
-    return (finalChunkNumberSpecifiedByServer - chunkNumber); // number of chunks left to transfer
+    uint64_t remaining = (finalChunkNumberSpecifiedByServer - chunkNumber); // number of chunks left to transfer
+    return remaining;
 }
 
 /**
@@ -242,32 +253,31 @@ static CCNxInterest *
 _createInterest(const char *command, const char *targetName)
 {
     CCNxName *interestName = ccnxName_CreateFromURI(tutorialCommon_DomainPrefix); // Start with the prefix. We append to this.
-
+    
     // Create a NameSegment for our command, which we will append after the prefix we just created.
     PARCBuffer *commandBuffer = parcBuffer_WrapCString((char *) command);
     CCNxNameSegment *commandSegment = ccnxNameSegment_CreateTypeValue(CCNxNameLabelType_NAME, commandBuffer);
     parcBuffer_Release(&commandBuffer);
-
+    
     // Append the new command segment to the prefix
     ccnxName_Append(interestName, commandSegment);
     ccnxNameSegment_Release(&commandSegment);
-
+    
     // If we have a target, then create another NameSegment for it and append that.
     if (targetName != NULL) {
         // Create a NameSegment for our target object
         PARCBuffer *targetBuf = parcBuffer_WrapCString((char *) targetName);
         CCNxNameSegment *targetSegment = ccnxNameSegment_CreateTypeValue(CCNxNameLabelType_NAME, targetBuf);
         parcBuffer_Release(&targetBuf);
-
-
+        
         // Append it to the ccnxName.
         ccnxName_Append(interestName, targetSegment);
         ccnxNameSegment_Release(&targetSegment);
     }
-
+    
     CCNxInterest *result = ccnxInterest_CreateSimple(interestName);
     ccnxName_Release(&interestName);
-
+    
     return result;
 }
 
@@ -361,11 +371,18 @@ _displayUsage(char *programName)
     printf(" the tutorialServer application, which should be running when this application is used. A CCNx\n");
     printf(" forwarder (e.g. Metis) must also be running.\n\n");
 
-    printf("Usage: %s  [-h] [-v] [ list | fetch <filename> ]\n", programName);
+    printf("Usage: %s  [-h] [-v] [-l lci:/a/b/c] [ list | fetch <filename> ]\n", programName);
     printf("  '%s list' will list the files in the directory served by tutorial_Server\n", programName);
     printf("  '%s fetch <filename>' will fetch the specified filename\n", programName);
     printf("  '%s -v' will show the tutorial demo code version\n", programName);
     printf("  '%s -h' will show this help\n\n", programName);
+}
+
+static void
+_printStat(const char *label, uint64_t value, uint64_t total)
+{
+    double percent = (double) value / total * 100.0;
+    printf("%-35s      %10" PRIu64 ", (%6.2f%%)\n", label, value, percent);
 }
 
 int
@@ -391,8 +408,8 @@ main(int argc, char *argv[argc])
     if (commandArgCount == 2
         && (strncmp(tutorialCommon_CommandFetch, commandArgs[0], strlen(commandArgs[0])) == 0)) {        // "fetch <filename>"
         status = _executeUserCommand(commandArgs[0], commandArgs[1]) ? EXIT_SUCCESS : EXIT_FAILURE;
-    } else if (commandArgCount == 1
-               && (strncmp(tutorialCommon_CommandList, commandArgs[0], strlen(commandArgs[0])) == 0)) {  // "list"
+    } else if (commandArgCount == 1 
+        && (strncmp(tutorialCommon_CommandList, commandArgs[0], strlen(commandArgs[0])) == 0)) {        // "list"
         status = _executeUserCommand(commandArgs[0], NULL) ? EXIT_SUCCESS : EXIT_FAILURE;
     } else {
         status = EXIT_FAILURE;

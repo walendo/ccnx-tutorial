@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2014-2015, Xerox Corporation (Xerox)and Palo Alto Research Center (PARC)
+ * Copyright (c) 2015, Xerox Corporation (Xerox)and Palo Alto Research Center (PARC)
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -26,14 +26,14 @@
  */
 /**
  * @author Alan Walendowski, Palo Alto Research Center (Xerox PARC)
- * @copyright 2014-2015, Xerox Corporation (Xerox)and Palo Alto Research Center (PARC).  All rights reserved.
+ * @copyright 2015, Xerox Corporation (Xerox)and Palo Alto Research Center (PARC).  All rights reserved.
  */
-#include <stdio.h>
 
 #include "tutorial_Common.h"
 #include "tutorial_About.h"
 
 #include <LongBow/runtime.h>
+#include <stdio.h>
 
 #include <ccnx/common/ccnx_NameSegmentNumber.h>
 
@@ -42,9 +42,14 @@
 #include <parc/security/parc_IdentityFile.h>
 
 /**
+ * The default name the tutorial will use if no other name is specified.
+ */
+static const char _defaultTutorialDomainPrefix[] = "lci:/ccnx/tutorial";
+
+/**
  * The CCNx Name prefix we'll use for the tutorial.
  */
-const char *tutorialCommon_DomainPrefix = "lci:/ccnx/tutorial";
+char tutorialCommon_DomainPrefix[512]; 
 
 /**
  * The size of a chunk. We break CCNx Content payloads up into pieces of this size.
@@ -94,6 +99,21 @@ tutorialCommon_SetupPortalFactory(const char *keystoreName, const char *keystore
     return result;
 }
 
+CCNxName *
+tutorialCommon_CreateWithBaseName(const CCNxName *name)
+{
+    size_t numberOfSegmentsInName = ccnxName_GetSegmentCount(name);
+
+    CCNxName *result = ccnxName_Create();
+    
+    // Copy all segments, except the last one - which is the chunk number.
+    for (int i = 0; i < numberOfSegmentsInName-1; i++) {
+        ccnxName_Append(result, ccnxName_GetSegment(name, i));
+    }
+    
+    return result;
+}
+
 uint64_t
 tutorialCommon_GetChunkNumberFromName(const CCNxName *name)
 {
@@ -103,13 +123,13 @@ tutorialCommon_GetChunkNumberFromName(const CCNxName *name)
     assertTrue(ccnxNameSegment_GetType(chunkNumberSegment) == CCNxNameLabelType_CHUNK,
                "Last segment is the wrong type, expected CCNxNameLabelType %02X got %02X",
                CCNxNameLabelType_CHUNK,
-               ccnxNameSegment_GetType(chunkNumberSegment))
-    {
+               ccnxNameSegment_GetType(chunkNumberSegment)) {
         ccnxName_Display(name, 0); // This executes only if the enclosing assertion fails
     }
 
     return ccnxNameSegmentNumber_Value(chunkNumberSegment);
 }
+
 
 char *
 tutorialCommon_CreateFileNameFromName(const CCNxName *name)
@@ -120,8 +140,7 @@ tutorialCommon_CreateFileNameFromName(const CCNxName *name)
     assertTrue(ccnxNameSegment_GetType(fileNameSegment) == CCNxNameLabelType_NAME,
                "Last segment is the wrong type, expected CCNxNameLabelType %02X got %02X",
                CCNxNameLabelType_NAME,
-               ccnxNameSegment_GetType(fileNameSegment))
-    {
+               ccnxNameSegment_GetType(fileNameSegment)) {
         ccnxName_Display(name, 0); // This executes only if the enclosing assertion fails
     }
 
@@ -137,8 +156,7 @@ tutorialCommon_CreateCommandStringFromName(const CCNxName *name, const CCNxName 
     assertTrue(ccnxNameSegment_GetType(commandSegment) == CCNxNameLabelType_NAME,
                "Last segment is the wrong type, expected CCNxNameLabelType %02X got %02X",
                CCNxNameLabelType_NAME,
-               ccnxNameSegment_GetType(commandSegment))
-    {
+               ccnxNameSegment_GetType(commandSegment)) {
         ccnxName_Display(name, 0); // This executes only if the enclosing assertion fails
     }
 
@@ -153,11 +171,21 @@ tutorialCommon_processCommandLineArguments(int argc, char **argv,
     int status = EXIT_SUCCESS;
     *commandArgCount = 0;
     *needToShowUsage = false;
+    int got_nd = 0; // got the domainPrefix definition ...
 
     for (size_t i = 1; i < argc; i++) {
         char *arg = argv[i];
         if (arg[0] == '-') {
             switch (arg[1]) {
+                case 'l': {
+                    if (argv[2]) {
+                        strncpy(tutorialCommon_DomainPrefix, argv[2], sizeof(tutorialCommon_DomainPrefix));
+                        printf("Using domainPrefix :: [%s]\n", tutorialCommon_DomainPrefix);
+                        got_nd = 1;     
+                        i++;
+                    }
+                    break;
+                }
                 case 'h': {
                     *needToShowUsage = true;
                     *shouldExit = true;
@@ -179,6 +207,11 @@ tutorialCommon_processCommandLineArguments(int argc, char **argv,
             // Not a '-' option, so save it as a command argument.
             commandArgs[(*commandArgCount)++] = arg;
         }
+    }
+
+    if (got_nd == 0) {
+        strncpy(tutorialCommon_DomainPrefix, _defaultTutorialDomainPrefix, sizeof(tutorialCommon_DomainPrefix));
+        printf("Using the default domainPrefix :: [%s]\n", tutorialCommon_DomainPrefix);
     }
     return status;
 }
